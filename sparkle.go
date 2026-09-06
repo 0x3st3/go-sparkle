@@ -31,6 +31,7 @@ double sparkle_updateCheckInterval();
 void sparkle_checkForUpdateInformation();
 
 void sparkle_setFeedURL(const char*);
+void sparkle_setDynamicFeedURL(const char*);
 const char* sparkle_feedURL();
 
 void sparkle_setUserAgentString(const char*);
@@ -160,6 +161,16 @@ func CheckForUpdateInformation() {
 // SUUpdaterDelegate::feedURLStringForUpdater: or SUUpdaterDelegate::feedParametersForUpdater:sendingSystemProfile:
 //
 // This property must be called on the main thread.
+// Sets the URL of the appcast returned by the updater delegate on each check.
+//
+// Unlike SetFeedURL this is not persisted to the host bundle's user defaults,
+// so it is safe for feed URLs that carry a short-lived credential.
+func SetDynamicFeedURL(url string) {
+	u := C.CString(url)
+	defer C.free(unsafe.Pointer(u))
+	C.sparkle_setDynamicFeedURL(u)
+}
+
 func SetFeedURL(url string) {
 	u := C.CString(url)
 	defer C.free(unsafe.Pointer(u))

@@ -6,9 +6,35 @@
 
 static SUUpdater *updater = nil;
 
+// -[SUUpdater setFeedURL:] persists the URL in the host bundle's user defaults,
+// which is unsafe for feed URLs carrying a short-lived credential. The delegate
+// is asked for the URL on every check and stores nothing.
+static NSString *dynamicFeedURL = nil;
+
+@interface GoSparkleUpdaterDelegate : NSObject <SUUpdaterDelegate>
+@end
+
+@implementation GoSparkleUpdaterDelegate
+- (NSString *)feedURLStringForUpdater:(SUUpdater *)theUpdater {
+  (void)theUpdater;
+  return dynamicFeedURL;
+}
+@end
+
+static GoSparkleUpdaterDelegate *updaterDelegate = nil;
+
 void sparkle_initialize() {
-  if (!updater)
+  if (!updater) {
     updater = [[SUUpdater sharedUpdater] retain];
+    updaterDelegate = [[GoSparkleUpdaterDelegate alloc] init];
+    [updater setDelegate:updaterDelegate];
+  }
+}
+
+void sparkle_setDynamicFeedURL(const char *feedURL) {
+  NSString *next = feedURL ? [@(feedURL) copy] : nil;
+  [dynamicFeedURL release];
+  dynamicFeedURL = next;
 }
 
 void sparkle_checkForUpdates() { [updater checkForUpdates:updater]; }
