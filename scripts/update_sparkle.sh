@@ -1,6 +1,6 @@
 #!/bin/sh -e
 
-VERSION="2.7.0"
+VERSION="2.9.6"
 DIR=$(mktemp -d)
 
 wget -q -O $DIR/Sparkle-$VERSION.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/$VERSION/Sparkle-$VERSION.tar.xz"
