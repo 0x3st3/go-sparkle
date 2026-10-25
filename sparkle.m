@@ -14,10 +14,44 @@ static NSString *dynamicFeedURL = nil;
 @interface GoSparkleUpdaterDelegate : NSObject <SUUpdaterDelegate>
 @end
 
+// Set while a background check started by InstallSilently is running.
+static BOOL silentInstall = NO;
+
+extern void goSparkleSilentInstallFailed(char *reason);
+
+static void failSilentInstall(NSString *reason) {
+  if (!silentInstall) {
+    return;
+  }
+  silentInstall = NO;
+  goSparkleSilentInstallFailed((char *)[reason UTF8String]);
+}
+
 @implementation GoSparkleUpdaterDelegate
 - (NSString *)feedURLStringForUpdater:(SUUpdater *)theUpdater {
   (void)theUpdater;
   return dynamicFeedURL;
+}
+
+- (void)updater:(SUUpdater *)theUpdater
+    willInstallUpdateOnQuit:(SUAppcastItem *)item
+    immediateInstallationBlock:(void (^)(void))installationBlock {
+  (void)theUpdater;
+  (void)item;
+  if (silentInstall) {
+    silentInstall = NO;
+    installationBlock();
+  }
+}
+
+- (void)updaterDidNotFindUpdate:(SUUpdater *)theUpdater {
+  (void)theUpdater;
+  failSilentInstall(@"The feed has no update for this version");
+}
+
+- (void)updater:(SUUpdater *)theUpdater didAbortWithError:(NSError *)error {
+  (void)theUpdater;
+  failSilentInstall([error localizedDescription]);
 }
 @end
 
@@ -38,6 +72,19 @@ void sparkle_setDynamicFeedURL(const char *feedURL) {
 }
 
 void sparkle_checkForUpdates() { [updater checkForUpdates:updater]; }
+
+void sparkle_installSilently() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [updater setAutomaticallyDownloadsUpdates:YES];
+    if (![updater automaticallyDownloadsUpdates]) {
+      silentInstall = YES;
+      failSilentInstall(@"Automatic updates are not allowed; set SUAllowsAutomaticUpdates in Info.plist");
+      return;
+    }
+    silentInstall = YES;
+    [updater checkForUpdatesInBackground];
+  });
+}
 
 void sparkle_checkForUpdatesInBackground() {
   [updater checkForUpdatesInBackground];

@@ -19,6 +19,8 @@ void sparkle_checkForUpdates();
 
 void sparkle_checkForUpdatesInBackground();
 
+void sparkle_installSilently();
+
 void sparkle_setAutomaticallyChecksForUpdates(int);
 int sparkle_automaticallyChecksForUpdates();
 
@@ -91,6 +93,25 @@ func CheckForUpdates() {
 // This will not find updates that the user has opted into skipping.
 func CheckForUpdatesInBackground() {
 	C.sparkle_checkForUpdatesInBackground()
+}
+
+var silentInstallFailed func(reason string)
+
+// InstallSilently checks the feed in the background and, when it finds an
+// update, downloads, installs and relaunches the app without showing any window.
+//
+// The host's Info.plist must set SUAllowsAutomaticUpdates. onFailure runs when
+// the check ends without installing; the app quits on success instead.
+func InstallSilently(onFailure func(reason string)) {
+	silentInstallFailed = onFailure
+	C.sparkle_installSilently()
+}
+
+//export goSparkleSilentInstallFailed
+func goSparkleSilentInstallFailed(reason *C.char) {
+	if silentInstallFailed != nil {
+		silentInstallFailed(C.GoString(reason))
+	}
 }
 
 // Sets whether or not to check for updates automatically.
