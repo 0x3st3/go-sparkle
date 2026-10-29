@@ -30,10 +30,17 @@ static GoSparkleUpdaterDelegate *updaterDelegate = nil;
 // Created on first use so an app that only installs silently never runs a
 // second update cycle for its bundle.
 static SUUpdater *legacyUpdater() {
-  if (!updater) {
-    updater = [[SUUpdater sharedUpdater] retain];
-    updaterDelegate = [[GoSparkleUpdaterDelegate alloc] init];
-    [updater setDelegate:updaterDelegate];
+  void (^create)(void) = ^{
+    if (!updater) {
+      updater = [[SUUpdater sharedUpdater] retain];
+      updaterDelegate = [[GoSparkleUpdaterDelegate alloc] init];
+      [updater setDelegate:updaterDelegate];
+    }
+  };
+  if ([NSThread isMainThread]) {
+    create();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), create);
   }
   return updater;
 }
@@ -156,9 +163,6 @@ static void failSilentInstall(NSString *reason) {
   acknowledgement();
 }
 
-- (void)showUpdateInFocus {
-}
-
 - (void)dismissUpdateInstallation {
   failSilentInstall(@"The update ended before it was installed");
 }
@@ -168,10 +172,13 @@ static SPUUpdater *silentUpdater = nil;
 static GoSparkleSilentUserDriver *silentUserDriver = nil;
 static GoSparkleInstallDelegate *silentDelegate = nil;
 
+// Swapped on the main thread, where Sparkle reads it, so a check never sees a released URL.
 void sparkle_setDynamicFeedURL(const char *feedURL) {
   NSString *next = feedURL ? [@(feedURL) copy] : nil;
-  [dynamicFeedURL release];
-  dynamicFeedURL = next;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [dynamicFeedURL release];
+    dynamicFeedURL = next;
+  });
 }
 
 void sparkle_checkForUpdates() { [legacyUpdater() checkForUpdates:legacyUpdater()]; }
@@ -197,7 +204,7 @@ void sparkle_installSilently() {
       }
       silentUpdater = next;
     }
-    if (![silentUpdater canCheckForUpdates]) {
+    if ([silentUpdater sessionInProgress]) {
       failSilentInstall(@"An update is already in progress");
       return;
     }

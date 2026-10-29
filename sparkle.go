@@ -55,6 +55,7 @@ import "C"
 import (
 	"math"
 	"runtime"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -105,40 +106,51 @@ type InstallEvents struct {
 	Failed func(reason string)
 }
 
-var installEvents InstallEvents
+var (
+	installEventsMu sync.Mutex
+	installEvents   InstallEvents
+)
 
 // InstallSilently checks the feed and, when it finds an update, downloads,
 // installs and relaunches the app without showing any window.
 func InstallSilently(events InstallEvents) {
+	installEventsMu.Lock()
 	installEvents = events
+	installEventsMu.Unlock()
 	C.sparkle_installSilently()
+}
+
+func currentInstallEvents() InstallEvents {
+	installEventsMu.Lock()
+	defer installEventsMu.Unlock()
+	return installEvents
 }
 
 //export goSparkleInstallDownloading
 func goSparkleInstallDownloading(downloaded, total C.ulonglong) {
-	if installEvents.Downloading != nil {
-		installEvents.Downloading(uint64(downloaded), uint64(total))
+	if events := currentInstallEvents(); events.Downloading != nil {
+		events.Downloading(uint64(downloaded), uint64(total))
 	}
 }
 
 //export goSparkleInstallExtracting
 func goSparkleInstallExtracting() {
-	if installEvents.Extracting != nil {
-		installEvents.Extracting()
+	if events := currentInstallEvents(); events.Extracting != nil {
+		events.Extracting()
 	}
 }
 
 //export goSparkleInstallInstalling
 func goSparkleInstallInstalling() {
-	if installEvents.Installing != nil {
-		installEvents.Installing()
+	if events := currentInstallEvents(); events.Installing != nil {
+		events.Installing()
 	}
 }
 
 //export goSparkleInstallFailed
 func goSparkleInstallFailed(reason *C.char) {
-	if installEvents.Failed != nil {
-		installEvents.Failed(C.GoString(reason))
+	if events := currentInstallEvents(); events.Failed != nil {
+		events.Failed(C.GoString(reason))
 	}
 }
 
