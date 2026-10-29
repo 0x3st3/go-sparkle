@@ -13,8 +13,6 @@ package sparkle
 
 #include <stdlib.h>
 
-void sparkle_initialize();
-
 void sparkle_checkForUpdates();
 
 void sparkle_checkForUpdatesInBackground();
@@ -65,7 +63,6 @@ import (
 
 func init() {
 	runtime.LockOSThread()
-	C.sparkle_initialize()
 }
 
 // Explicitly checks for updates and displays a progress dialog while doing so.
@@ -95,22 +92,53 @@ func CheckForUpdatesInBackground() {
 	C.sparkle_checkForUpdatesInBackground()
 }
 
-var silentInstallFailed func(reason string)
+// InstallEvents reports how far InstallSilently got. Callbacks run on the main
+// thread and must not block it.
+type InstallEvents struct {
+	// Downloading runs as the archive arrives. total is 0 until the size is known.
+	Downloading func(downloaded, total uint64)
+	// Extracting runs once the download is complete and Sparkle unpacks and verifies it.
+	Extracting func()
+	// Installing runs when the installer takes over; the app quits shortly after.
+	Installing func()
+	// Failed runs when the check ends without installing.
+	Failed func(reason string)
+}
 
-// InstallSilently checks the feed in the background and, when it finds an
-// update, downloads, installs and relaunches the app without showing any window.
-//
-// The host's Info.plist must set SUAllowsAutomaticUpdates. onFailure runs when
-// the check ends without installing; the app quits on success instead.
-func InstallSilently(onFailure func(reason string)) {
-	silentInstallFailed = onFailure
+var installEvents InstallEvents
+
+// InstallSilently checks the feed and, when it finds an update, downloads,
+// installs and relaunches the app without showing any window.
+func InstallSilently(events InstallEvents) {
+	installEvents = events
 	C.sparkle_installSilently()
 }
 
-//export goSparkleSilentInstallFailed
-func goSparkleSilentInstallFailed(reason *C.char) {
-	if silentInstallFailed != nil {
-		silentInstallFailed(C.GoString(reason))
+//export goSparkleInstallDownloading
+func goSparkleInstallDownloading(downloaded, total C.ulonglong) {
+	if installEvents.Downloading != nil {
+		installEvents.Downloading(uint64(downloaded), uint64(total))
+	}
+}
+
+//export goSparkleInstallExtracting
+func goSparkleInstallExtracting() {
+	if installEvents.Extracting != nil {
+		installEvents.Extracting()
+	}
+}
+
+//export goSparkleInstallInstalling
+func goSparkleInstallInstalling() {
+	if installEvents.Installing != nil {
+		installEvents.Installing()
+	}
+}
+
+//export goSparkleInstallFailed
+func goSparkleInstallFailed(reason *C.char) {
+	if installEvents.Failed != nil {
+		installEvents.Failed(C.GoString(reason))
 	}
 }
 

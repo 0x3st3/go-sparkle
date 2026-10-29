@@ -1,69 +1,172 @@
 #define BUILDING_SPARKLE_SOURCES_EXTERNALLY
 
 #import <Foundation/Foundation.h>
+#import <Headers/SPUUpdater.h>
+#import <Headers/SPUUpdaterDelegate.h>
+#import <Headers/SPUUserDriver.h>
+#import <Headers/SUAppcastItem.h>
+#import <Headers/SUUpdatePermissionResponse.h>
 #import <Headers/SUUpdater.h>
 #import <objc/runtime.h> // Required for class_addMethod()
 
-static SUUpdater *updater = nil;
-
 // -[SUUpdater setFeedURL:] persists the URL in the host bundle's user defaults,
-// which is unsafe for feed URLs carrying a short-lived credential. The delegate
-// is asked for the URL on every check and stores nothing.
+// which is unsafe for feed URLs carrying a short-lived credential. The delegates
+// are asked for the URL on every check and store nothing.
 static NSString *dynamicFeedURL = nil;
 
 @interface GoSparkleUpdaterDelegate : NSObject <SUUpdaterDelegate>
 @end
-
-// Set while a background check started by InstallSilently is running.
-static BOOL silentInstall = NO;
-
-extern void goSparkleSilentInstallFailed(char *reason);
-
-static void failSilentInstall(NSString *reason) {
-  if (!silentInstall) {
-    return;
-  }
-  silentInstall = NO;
-  goSparkleSilentInstallFailed((char *)[reason UTF8String]);
-}
 
 @implementation GoSparkleUpdaterDelegate
 - (NSString *)feedURLStringForUpdater:(SUUpdater *)theUpdater {
   (void)theUpdater;
   return dynamicFeedURL;
 }
-
-- (void)updater:(SUUpdater *)theUpdater
-    willInstallUpdateOnQuit:(SUAppcastItem *)item
-    immediateInstallationBlock:(void (^)(void))installationBlock {
-  (void)theUpdater;
-  (void)item;
-  if (silentInstall) {
-    silentInstall = NO;
-    installationBlock();
-  }
-}
-
-- (void)updaterDidNotFindUpdate:(SUUpdater *)theUpdater {
-  (void)theUpdater;
-  failSilentInstall(@"The feed has no update for this version");
-}
-
-- (void)updater:(SUUpdater *)theUpdater didAbortWithError:(NSError *)error {
-  (void)theUpdater;
-  failSilentInstall([error localizedDescription]);
-}
 @end
 
+static SUUpdater *updater = nil;
 static GoSparkleUpdaterDelegate *updaterDelegate = nil;
 
-void sparkle_initialize() {
+// Created on first use so an app that only installs silently never runs a
+// second update cycle for its bundle.
+static SUUpdater *legacyUpdater() {
   if (!updater) {
     updater = [[SUUpdater sharedUpdater] retain];
     updaterDelegate = [[GoSparkleUpdaterDelegate alloc] init];
     [updater setDelegate:updaterDelegate];
   }
+  return updater;
 }
+
+extern void goSparkleInstallDownloading(unsigned long long downloaded, unsigned long long total);
+extern void goSparkleInstallExtracting(void);
+extern void goSparkleInstallInstalling(void);
+extern void goSparkleInstallFailed(char *reason);
+
+// Set while a check started by InstallSilently has not yet failed or reached the installer.
+static BOOL silentInstall = NO;
+static uint64_t downloadedLength = 0;
+static uint64_t expectedLength = 0;
+
+static void failSilentInstall(NSString *reason) {
+  if (!silentInstall) {
+    return;
+  }
+  silentInstall = NO;
+  goSparkleInstallFailed((char *)[reason UTF8String]);
+}
+
+@interface GoSparkleInstallDelegate : NSObject <SPUUpdaterDelegate>
+@end
+
+@implementation GoSparkleInstallDelegate
+- (NSString *)feedURLStringForUpdater:(SPUUpdater *)theUpdater {
+  (void)theUpdater;
+  return dynamicFeedURL;
+}
+@end
+
+// Answers every prompt with install and reports progress instead of showing a window.
+@interface GoSparkleSilentUserDriver : NSObject <SPUUserDriver>
+@end
+
+@implementation GoSparkleSilentUserDriver
+- (void)showUpdatePermissionRequest:(SPUUpdatePermissionRequest *)request
+                              reply:(void (^)(SUUpdatePermissionResponse *))reply {
+  (void)request;
+  reply([[[SUUpdatePermissionResponse alloc] initWithAutomaticUpdateChecks:NO
+                                                         sendSystemProfile:NO] autorelease]);
+}
+
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {
+  (void)cancellation;
+}
+
+- (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)appcastItem
+                                 state:(SPUUserUpdateState *)state
+                                 reply:(void (^)(SPUUserUpdateChoice))reply {
+  (void)state;
+  if (appcastItem.informationOnlyUpdate) {
+    failSilentInstall(@"The update has no download for this app");
+    reply(SPUUserUpdateChoiceDismiss);
+    return;
+  }
+  reply(SPUUserUpdateChoiceInstall);
+}
+
+- (void)showUpdateReleaseNotesWithDownloadData:(SPUDownloadData *)downloadData {
+  (void)downloadData;
+}
+
+- (void)showUpdateReleaseNotesFailedToDownloadWithError:(NSError *)error {
+  (void)error;
+}
+
+- (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+  failSilentInstall([error localizedDescription]);
+  acknowledgement();
+}
+
+- (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+  failSilentInstall([error localizedDescription]);
+  acknowledgement();
+}
+
+- (void)showDownloadInitiatedWithCancellation:(void (^)(void))cancellation {
+  (void)cancellation;
+  downloadedLength = 0;
+  expectedLength = 0;
+  goSparkleInstallDownloading(downloadedLength, expectedLength);
+}
+
+- (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)expectedContentLength {
+  expectedLength = expectedContentLength;
+  goSparkleInstallDownloading(downloadedLength, expectedLength);
+}
+
+- (void)showDownloadDidReceiveDataOfLength:(uint64_t)length {
+  downloadedLength += length;
+  goSparkleInstallDownloading(downloadedLength, expectedLength);
+}
+
+- (void)showDownloadDidStartExtractingUpdate {
+  goSparkleInstallExtracting();
+}
+
+- (void)showExtractionReceivedProgress:(double)progress {
+  (void)progress;
+}
+
+- (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
+  reply(SPUUserUpdateChoiceInstall);
+}
+
+- (void)showInstallingUpdateWithApplicationTerminated:(BOOL)applicationTerminated
+                          retryTerminatingApplication:(void (^)(void))retryTerminatingApplication {
+  (void)applicationTerminated;
+  (void)retryTerminatingApplication;
+  if (silentInstall) {
+    silentInstall = NO;
+    goSparkleInstallInstalling();
+  }
+}
+
+- (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
+  (void)relaunched;
+  acknowledgement();
+}
+
+- (void)showUpdateInFocus {
+}
+
+- (void)dismissUpdateInstallation {
+  failSilentInstall(@"The update ended before it was installed");
+}
+@end
+
+static SPUUpdater *silentUpdater = nil;
+static GoSparkleSilentUserDriver *silentUserDriver = nil;
+static GoSparkleInstallDelegate *silentDelegate = nil;
 
 void sparkle_setDynamicFeedURL(const char *feedURL) {
   NSString *next = feedURL ? [@(feedURL) copy] : nil;
@@ -71,85 +174,101 @@ void sparkle_setDynamicFeedURL(const char *feedURL) {
   dynamicFeedURL = next;
 }
 
-void sparkle_checkForUpdates() { [updater checkForUpdates:updater]; }
+void sparkle_checkForUpdates() { [legacyUpdater() checkForUpdates:legacyUpdater()]; }
 
 void sparkle_installSilently() {
   dispatch_async(dispatch_get_main_queue(), ^{
-    [updater setAutomaticallyDownloadsUpdates:YES];
-    if (![updater automaticallyDownloadsUpdates]) {
-      silentInstall = YES;
-      failSilentInstall(@"Automatic updates are not allowed; set SUAllowsAutomaticUpdates in Info.plist");
+    silentInstall = YES;
+    if (!silentUpdater) {
+      if (!silentUserDriver) {
+        silentUserDriver = [[GoSparkleSilentUserDriver alloc] init];
+        silentDelegate = [[GoSparkleInstallDelegate alloc] init];
+      }
+      NSBundle *bundle = [NSBundle mainBundle];
+      SPUUpdater *next = [[SPUUpdater alloc] initWithHostBundle:bundle
+                                              applicationBundle:bundle
+                                                     userDriver:silentUserDriver
+                                                       delegate:silentDelegate];
+      NSError *error = nil;
+      if (![next startUpdater:&error]) {
+        [next release];
+        failSilentInstall([error localizedDescription]);
+        return;
+      }
+      silentUpdater = next;
+    }
+    if (![silentUpdater canCheckForUpdates]) {
+      failSilentInstall(@"An update is already in progress");
       return;
     }
-    silentInstall = YES;
-    [updater checkForUpdatesInBackground];
+    [silentUpdater checkForUpdates];
   });
 }
 
 void sparkle_checkForUpdatesInBackground() {
-  [updater checkForUpdatesInBackground];
+  [legacyUpdater() checkForUpdatesInBackground];
 }
 
 void sparkle_setAutomaticallyChecksForUpdates(int check) {
-  [updater setAutomaticallyChecksForUpdates:check];
+  [legacyUpdater() setAutomaticallyChecksForUpdates:check];
 }
 
 int sparkle_automaticallyChecksForUpdates() {
-  return [updater automaticallyChecksForUpdates];
+  return [legacyUpdater() automaticallyChecksForUpdates];
 }
 
 void sparkle_setAutomaticallyDownloadsUpdates(int check) {
-  [updater setAutomaticallyDownloadsUpdates:check];
+  [legacyUpdater() setAutomaticallyDownloadsUpdates:check];
 }
 
 int sparkle_automaticallyDownloadsUpdates() {
-  return [updater automaticallyDownloadsUpdates];
+  return [legacyUpdater() automaticallyDownloadsUpdates];
 }
 
 void sparkle_setUpdateCheckInterval(int interval) {
-  [updater setUpdateCheckInterval:interval];
+  [legacyUpdater() setUpdateCheckInterval:interval];
 }
 
-int sparkle_updateCheckInterval() { return [updater updateCheckInterval]; }
+int sparkle_updateCheckInterval() { return [legacyUpdater() updateCheckInterval]; }
 
 void sparkle_checkForUpdateInformation() {
-  [updater checkForUpdateInformation];
+  [legacyUpdater() checkForUpdateInformation];
 }
 
 void sparkle_setFeedURL(const char *feedURL) {
-  [updater setFeedURL:[NSURL URLWithString:@(feedURL)]];
+  [legacyUpdater() setFeedURL:[NSURL URLWithString:@(feedURL)]];
 }
 
 const char *sparkle_feedURL() {
-  return [[[updater feedURL] absoluteString] UTF8String];
+  return [[[legacyUpdater() feedURL] absoluteString] UTF8String];
 }
 
 void sparkle_setUserAgentString(const char *ua) {
-  [updater setUserAgentString:@(ua)];
+  [legacyUpdater() setUserAgentString:@(ua)];
 }
 
 const char *sparkle_userAgentString() {
-  return [[updater userAgentString] UTF8String];
+  return [[legacyUpdater() userAgentString] UTF8String];
 }
 
 void sparkle_setSendsSystemProfile(int check) {
-  [updater setSendsSystemProfile:check];
+  [legacyUpdater() setSendsSystemProfile:check];
 }
 
-int sparkle_sendsSystemProfile() { return [updater sendsSystemProfile]; }
+int sparkle_sendsSystemProfile() { return [legacyUpdater() sendsSystemProfile]; }
 
 void sparkle_setDecryptionPassword(const char *pw) {
-  [updater setDecryptionPassword:@(pw)];
+  [legacyUpdater() setDecryptionPassword:@(pw)];
 }
 
 const char *sparkle_decryptionPassword() {
-  return [[updater decryptionPassword] UTF8String];
+  return [[legacyUpdater() decryptionPassword] UTF8String];
 }
 
 double sparkle_lastUpdateCheckDate() {
-  return [[updater lastUpdateCheckDate] timeIntervalSince1970];
+  return [[legacyUpdater() lastUpdateCheckDate] timeIntervalSince1970];
 }
 
-void sparkle_resetUpdateCycle() { [updater resetUpdateCycle]; }
+void sparkle_resetUpdateCycle() { [legacyUpdater() resetUpdateCycle]; }
 
-int sparkle_updateInProgress() { return [updater updateInProgress]; }
+int sparkle_updateInProgress() { return [legacyUpdater() updateInProgress]; }
